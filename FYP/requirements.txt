@@ -1,0 +1,15 @@
+transformers
+torch
+pandas
+scikit-learn
+datasets
+sentencepiece
+gradio
+matplotlib
+seaborn
+wordcloud
+accelerate
+rouge-score
+nltk
+absl-py
+evaluate

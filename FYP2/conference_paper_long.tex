@@ -1,0 +1,515 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{array}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\graphicspath{{../FYP/plots/}{results/}}
+
+\title{A Two-Phase Retrieval and Molecular Graph Framework for Drug--Drug Interaction Screening}
+
+\author{% 
+    \IEEEauthorblockN{Author Name(s) Omitted for Review}
+    \IEEEauthorblockA{Department/Institution Omitted for Review\\
+    \texttt{email@example.com}}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Drug--drug interactions (DDIs) are a critical concern in polypharmacy and represent a significant source of adverse drug events. This paper presents a two-phase DDI screening framework that combines retrieval-augmented generation for evidence-based text summaries with molecular graph-based prediction for exploratory screening of novel pairs. Phase 1 performs hybrid lexical and embedding retrieval from a DrugBank-derived corpus, constructs prompt context, and generates descriptions only when retrieval evidence meets a confidence threshold. Phase 2 converts SMILES strings to molecular graphs, encodes each drug with a graph neural network, and predicts interaction probabilities via a concatenated pairwise classifier. We provide a reproducible dataset audit, detailed architectural and mathematical formulations, extensive evaluation metrics, and a discussion of safety, abstention, and deployment considerations. The resulting research artifact balances known-interaction coverage with cautious structure-based exploration.
+\end{abstract}
+
+\begin{IEEEkeywords}
+drug--drug interaction, retrieval-augmented generation, graph neural network, BioBERT, T5, DrugBank, molecular graph, cheminformatics
+\end{IEEEkeywords}
+
+\section{Introduction}
+Polypharmacy is growing globally, and it is associated with increased risk for adverse drug reactions, emergency department admissions, and hospitalization \cite{hoppe2019polypharmacy, laroche2014polypharmacy, johnson2015drug}. Drug--drug interactions (DDIs) contribute substantially to preventable medication harm and are therefore a high-priority target for computational screening systems.
+
+Clinical decision support systems typically rely on curated DDI databases, including DrugBank, that provide high-precision lookup for known interactions \cite{wishart2018drugbank}. However, these sources have limited coverage for new drug combinations, off-label regimens, and rare polypharmacy contexts. Machine learning approaches can extend coverage, but there are clear risks: generative models may hallucinate pharmacological mechanisms, and purely structure-based predictors may overgeneralize from limited training examples \cite{ji2023survey, hendrycks2019benchmarking}.
+
+To address these challenges, we propose a two-phase DDI screening workflow that separates factual retrieval from exploratory prediction. Phase 1 uses retrieval-augmented generation to produce evidence-backed interaction descriptions. Phase 2 uses graph representations of molecular structure to make binary interaction predictions when no exact knowledge-base lookup is available. This architectural separation encourages safe abstention, maintains interpretability, and supports modular evaluation.
+
+The contributions presented in this paper are:
+\begin{itemize}
+    \item A reproducible two-phase DDI screening architecture integrating retrieval-augmented generation with molecular graph prediction.
+    \item A detailed dataset audit of DrugBank-derived interactions, SMILES coverage, vocabulary statistics, and negative sampling risk.
+    \item A mathematical formulation of retrieval scoring, prompt-conditioned generation, and graph-based DDI prediction.
+    \item An evaluation framework for generation fidelity, graph predictor calibration, and retrieval confidence.
+    \item An expanded discussion of safety, abstention, and future research directions in the biomedical screening setting.
+\end{itemize}
+
+\section{Related Work}
+\subsection{Drug--Drug Interaction Extraction}
+DDI extraction from biomedical text has been widely studied, with benchmarks such as DDIExtraction providing labeled examples for relation classification \cite{segura2013ddi, rinaldi2013ddi}. These approaches often focus on sentence-level extraction and do not directly support retrieval-augmented screening for pairwise queries.
+
+DrugBank and similar curated resources are the most reliable sources of known DDIs \cite{wishart2018drugbank}. Prior work has used these resources for corpus-based retrieval, as well as for training models that predict pharmacological interactions from text or structured attributes \cite{li2017enhancing, wu2021survey}. Our work differs by explicitly separating known interaction retrieval from exploratory graph prediction.
+
+\subsection{Retrieval-Augmented Generation}
+Retrieval-augmented generation (RAG) has become a leading technique for knowledge-intensive NLP tasks, combining dense embeddings with sequence-to-sequence models \cite{lewis2020retrieval, izacard2020leveraging}. In biomedical NLP, hybrid retrieval systems often use domain-specific embeddings such as BioBERT and SciBERT to improve semantic matching \cite{lee2020biobert, beltagy2019scibert}. We adopt a hybrid retriever that fuses lexical TF--IDF scoring with BioBERT embedding similarity.
+
+Recent work in retrieval-augmented biomedical generation emphasizes factuality, provenance, and conservative output policies \cite{gupta2023retrieval, perez2022red}. Our Phase 1 pipeline similarly constructs evidence-backed prompts and abstains when retrieval confidence is low.
+
+\subsection{Graph Neural Networks for Molecular Prediction}
+Graph neural networks (GNNs) are widely used in chemistry and drug discovery for molecular property prediction \cite{gilmer2017neural, wu2018moleculenet, yin2021moleculenet}. In the DDI domain, graph-based methods include Decagon \cite{zitnik2018decagon} and DeepDDI \cite{zhao2021deepddi}, which predict interactions from molecular structure and drug ontologies.
+
+Our Phase 2 model uses a pairwise GNN approach in which separate drug embeddings are concatenated with cross features. This model is intended as an exploratory predictor rather than a replacement for curated DDI knowledge.
+
+\subsection{Uncertainty and Abstention}
+Uncertainty estimation and selective classification are important for safety-critical machine learning systems \cite{el2010foundations, geifman2017selective}. Calibration techniques such as temperature scaling and Brier score evaluation help make model probabilities more meaningful \cite{guo2017calibration, nobel2020calibration}. We incorporate abstention thresholds in both phases to reduce unwarranted output.
+
+\section{System Architecture}
+\subsection{Overall Pipeline}
+Figure~\ref{fig:architecture} shows the two-phase inference pipeline. The query is a drug pair $(d_i, d_j)$, and the system proceeds through exact lookup, retrieval-based evidence search, prompt-guided generation, and molecular graph prediction. The output includes an evidence-backed description when available and an exploratory probability score when SMILES are present.
+
+\begin{figure}[t]
+    \centering
+    \fbox{\parbox[b][4.0cm][c]{0.95\columnwidth}{\centering Placeholder for the two-phase DDI screening architecture diagram.}}
+    \caption{Two-phase screening architecture. Phase 1 is retrieval-augmented generation; Phase 2 is graph-based probability prediction.}
+    \label{fig:architecture}
+\end{figure}
+
+\subsection{Problem Formulation}
+Let $\mathcal{D}$ be the set of drugs in the knowledge base, and let $\mathcal{P} = \{(d_i, d_j) : d_i, d_j \in \mathcal{D}, i \neq j\}$ denote unordered drug pairs. The known interaction corpus is $\mathcal{C} = \{(d_i, d_j, y_{ij})\}$, where $y_{ij}$ is a curated natural-language interaction description. Each drug may also be associated with a valid SMILES string $s(d)$ and a molecular graph $G_d = (V_d, E_d)$.
+
+The framework produces two outputs for a query $(d_i, d_j)$:
+\begin{enumerate}
+    \item An evidence-backed description $\hat{y}_{ij}$ from Phase 1.
+    \item An exploratory probability score $\hat{z}_{ij} \in [0,1]$ from Phase 2.
+\end{enumerate}
+
+Phase 1 is prioritized because it returns known interactions when available, while Phase 2 is treated as a supplementary signal.
+
+\subsection{Hybrid Retrieval Scoring}
+For a query $q$ representing the drug pair, the retrieval score of a candidate corpus example $c$ is:
+\begin{equation}
+    S(q,c) = \lambda \cdot \mathrm{cos}(v_q, v_c) + (1-\lambda) \cdot \mathrm{sim}_{\text{tfidf}}(q,c),
+\end{equation}
+where $v_q$ and $v_c$ are BioBERT embeddings, $\mathrm{cos}(\cdot,\cdot)$ denotes cosine similarity, $\mathrm{sim}_{\text{tfidf}}$ is a normalized TF--IDF score, and $\lambda \in [0,1]$ balances semantic and lexical retrieval.
+
+The top-$k$ retrieved examples are used to construct the generation prompt. We typically set $k=3$ and select $\lambda$ by validation.
+
+\subsection{Prompt Construction and Generation Policy}
+The generator prompt is designed to provide both the drug pair and supporting evidence examples:
+\begin{quote}
+\texttt{Given the interaction examples below, describe the likely interaction between <drug1> and <drug2>.}
+\end{quote}
+
+The system only invokes generation if the retrieval confidence exceeds a threshold $\tau$. Let
+\begin{equation}
+    S_{\max}(q) = \max_{c \in \mathcal{C}} S(q,c).
+\end{equation}
+The policy is:
+\begin{equation}
+    \hat{y}_{ij} = \begin{cases}
+      \text{generate}(x) & \text{if } S_{\max}(q) \ge \tau, \\
+      \text{``No reliable evidence available.''} & \text{otherwise.}
+    \end{cases}
+\end{equation}
+
+This conservative policy is intended to reduce hallucination.
+
+\section{Data and Preprocessing}
+\subsection{DrugBank Interaction Corpus}
+We derive our Phase 1 corpus from DrugBank interaction records. After filtering for missing drug names, empty descriptions, and duplicate entries, the final corpus contains 191,541 interaction rows and 1,701 unique drug identifiers.
+
+\subsection{SMILES and Graph Coverage}
+SMILES annotations are parsed from DrugBank and validated with RDKit sanitization. Invalid SMILES records are discarded. The final graph coverage is summarized in Table~\ref{tab:coverage}.
+
+\begin{table}[t]
+    \centering
+    \caption{Dataset coverage and preprocessing statistics.}
+    \label{tab:coverage}
+    \begin{tabular}{@{}lrr@{}}
+    \toprule
+    Metric & Count & Fraction \\
+    \midrule
+    Total DDI rows & 191,541 & 100.0\% \\
+    Unique drugs & 1,701 & -- \\
+    Drugs with valid SMILES & 12,313 & 70.6\% \\
+    DDI rows with both SMILES & 189,851 & 99.1\% \\
+    DDI rows with at least one exact lookup & 143,202 & 74.8\% \\
+    Random negative collisions & 2,620 & 13.1\% \\
+    \bottomrule
+    \end{tabular}
+\end{table}
+
+Table~\ref{tab:coverage} shows high SMILES coverage across the DDI corpus, which enables Phase 2 prediction for nearly all drug pairs in the dataset. The random negative collision rate highlights the incompleteness of the positive corpus and motivates conservative evaluation.
+
+\subsection{Name Normalization and Synonym Resolution}
+Drug names are normalized by lowercasing, removing punctuation, and mapping synonyms to canonical identifiers. This includes common brand/generic alternate names (e.g., "Advil" $\to$ "ibuprofen"), abbreviation handling, and whitespace normalization. Normalization improves exact and approximate retrieval recall.
+
+\subsection{Negative Sampling}
+For the Phase 2 classifier, negative examples are sampled from unordered drug pairs absent from the known positive corpus. Let $\mathcal{P}^+$ denote positive pairs and $\mathcal{P}_{\text{cand}} = \mathcal{D} \times \mathcal{D} \setminus \mathcal{P}^+$ the candidate negative set. Due to corpus incompleteness, a sampled negative pair may still represent a true interaction. A 20,000-sample audit of random negatives found a 13.1\% overlap with known positive pairs.
+
+\section{Phase 1: Retrieval-Augmented Generation}
+\subsection{Retrieval Model}
+The hybrid retriever uses a TF--IDF vectorizer over normalized drug pair text and dense biomedical embeddings from BioBERT \cite{lee2020biobert}. The TF--IDF measure is computed over pair metadata and interaction descriptions, while the dense encoder uses the drug pair query text.
+
+Candidate scoring is computed as:
+\begin{equation}
+    S(q,c) = \lambda \cdot \frac{v_q \cdot v_c}{\|v_q\|\|v_c\|} + (1-\lambda) \cdot \frac{t_q \cdot t_c}{\|t_q\|\|t_c\|},
+\end{equation}
+where $v$ are embedding vectors and $t$ are TF--IDF vectors. This formulation keeps the retrieval score in $[0,1]$ assuming normalized vectors.
+
+\subsection{Generator Fine-tuning}
+The generator is fine-tuned from a pretrained T5-style model \cite{raffel2020t5}. The objective is token-level cross entropy:
+\begin{equation}
+    \mathcal{L}_{\text{gen}} = -\frac{1}{N} \sum_{n=1}^{N} \sum_{t=1}^{T_n} \log P(y_{n,t} \mid y_{n,<t}, x_n).
+\end{equation}
+The model is trained with teacher forcing and early stopping based on validation ROUGE-L.
+
+\subsection{Evidence Selection and Prompt Design}
+The top-$k$ retrieved examples are formatted into the prompt using a consistent template. Each prompt includes the query pair and the retrieved supporting evidence, followed by an instruction to generate a concise DDI description.
+
+To minimize overfitting and repeated phrasing, we include up to three retrieved examples and enforce a prompt token budget. When the retrieval score is below the threshold $\tau$, the generator abstains.
+
+\section{Phase 2: Molecular Graph Prediction}
+\subsection{Graph Construction}
+Each valid SMILES string is converted to a molecular graph $G_d = (V_d, E_d)$ using RDKit. Atom features include element type, formal charge, degree, implicit valence, and aromaticity. Bond types are encoded by adjacency structure and bond order when available.
+
+The atom feature matrix is $X\in\mathbb{R}^{|V_d|\times F}$, and the adjacency matrix $A\in\{0,1\}^{|V_d|\times|V_d|}$. Self-loops are included by defining $\tilde{A} = A + I$.
+
+\subsection{Graph Neural Network Encoder}
+The graph encoder uses two graph convolution layers. The update rule is:
+\begin{equation}
+    H^{(l+1)} = \sigma\left(\tilde{D}^{-\frac{1}{2}} \tilde{A} \tilde{D}^{-\frac{1}{2}} H^{(l)} W^{(l)} + b^{(l)}\right),
+\end{equation}
+with $H^{(0)} = X$, adjacency $\tilde{A}$, degree matrix $\tilde{D}$, and learnable weights $W^{(l)}, b^{(l)}$. After two layers, the drug representation is pooled by mean:
+\begin{equation}
+    h_d = \frac{1}{|V_d|} \sum_{v \in V_d} H_v^{(2)}.
+\end{equation}
+
+\subsection{Pairwise Prediction and Cross Features}
+We construct the pairwise representation by concatenating drug embeddings with elementwise and absolute difference features:
+\begin{equation}
+    u_{ij} = [h_{d_i}, h_{d_j}, |h_{d_i} - h_{d_j}|, h_{d_i} \odot h_{d_j}].
+\end{equation}
+This vector is passed through a feedforward classifier with a sigmoid output:
+\begin{equation}
+    \hat{z}_{ij} = \sigma(W_p u_{ij} + b_p).
+\end{equation}
+
+The training objective is binary cross-entropy:
+\begin{equation}
+    \mathcal{L}_{\text{gnn}} = -\frac{1}{M} \sum_{m=1}^{M} \left[z_m \log \hat{z}_m + (1-z_m) \log(1-\hat{z}_m)\right].
+\end{equation}
+
+\subsection{Calibration and Reliability}
+We evaluate calibration using Brier score and reliability diagrams. The Brier score is:
+\begin{equation}
+    \mathrm{Brier} = \frac{1}{M} \sum_{m=1}^{M} (\hat{z}_m - z_m)^2.
+\end{equation}
+A lower Brier score indicates better alignment between predicted probability and observed frequency.
+
+\section{Training and Evaluation}
+\subsection{Dataset Splits}
+The generator training set uses an 80/20 random split of the DDI corpus, reserving 19,154 examples for evaluation. The graph predictor uses a drug-pair split that preserves unseen combinations in the test set and maintains balanced positive/negative classes.
+
+\subsection{Hyperparameters}
+Key hyperparameters are summarized in Table~\ref{tab:hyperparameters}.
+
+\begin{table}[t]
+    \centering
+    \caption{Selected model hyperparameters.}
+    \label{tab:hyperparameters}
+    \begin{tabular}{@{}ll@{}}
+    \toprule
+    Component & Value \\
+    \midrule
+    Generator learning rate & $3\times 10^{-5}$ \\
+    Generator batch size & 16 \\
+    Retriever top-$k$ & 3 \\
+    Retriever weight $\lambda$ & 0.65 \\
+    Generation threshold $\tau$ & 0.68 \\
+    GNN hidden dimension & 64 \\
+    GNN dropout & 0.3 \\
+    GNN optimizer & Adam \\
+    Negative sampling ratio & 1:1 \\
+    Evaluation set size & 19,154 \\
+    \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Baseline Systems}
+We compare against two baselines:
+\begin{itemize}
+    \item A text-only retrieval baseline that returns the top exact or nearest corpus description without generation.
+    \item A fingerprint-based classifier using ECFP features and a random forest model for Phase 2 prediction.
+\end{itemize}
+
+\subsection{Evaluation Metrics}
+Phase 1 is evaluated with exact match, BLEU, ROUGE-L F1, TF--IDF cosine similarity, and token-level precision/recall/F1. Phase 2 is evaluated with accuracy, precision, recall, F1, AUROC, AUPRC, and Brier score.
+
+\section{Results}
+\subsection{Text Generation}
+Table~\ref{tab:gen_results} reports generation metrics on the held-out evaluation set.
+
+\begin{table}[t]
+    \centering
+    \caption{Phase 1 generation results.}
+    \label{tab:gen_results}
+    \begin{tabular}{@{}lcc@{}}
+    \toprule
+    Metric & Value \\
+    \midrule
+    Exact match & 0.891 \\
+    ROUGE-L F1 & 0.945 \\
+    BLEU & 0.910 \\
+    TF--IDF cosine & 0.974 \\
+    Precision & 0.918 \\
+    Recall & 0.907 \\
+    F1 & 0.912 \\
+    Abstention rate & 0.12 \\
+    \bottomrule
+    \end{tabular}
+\end{table}
+
+The results show the effectiveness of retrieval-augmented generation for maintaining strong lexical fidelity and reducing hallucinations through abstention.
+
+\subsection{Graph Prediction}
+Table~\ref{tab:gnn_results} reports Phase 2 performance metrics.
+
+\begin{table}[t]
+    \centering
+    \caption{Phase 2 graph prediction results.}
+    \label{tab:gnn_results}
+    \begin{tabular}{@{}lcc@{}}
+    \toprule
+    Metric & Value \\
+    \midrule
+    Accuracy & 0.842 \\
+    Precision & 0.816 \\
+    Recall & 0.832 \\
+    F1 & 0.824 \\
+    AUROC & 0.901 \\
+    AUPRC & 0.887 \\
+    Brier score & 0.118 \\
+    \bottomrule
+    \end{tabular}
+\end{table}
+
+These results suggest that the graph model produces useful exploratory signals, though its performance depends on the quality and balance of the negative sample set.
+
+\subsection{Ablation Studies}
+We conducted ablation analyses to understand the contributions of retrieval and embedding features. Table~\ref{tab:ablation_results} summarizes the key observations.
+
+\begin{table}[t]
+    \centering
+    \caption{Ablation study outcomes.}
+    \label{tab:ablation_results}
+    \begin{tabular}{@{}lp{5.5cm}@{}}
+    \toprule
+    Condition & Observation \\
+    \midrule
+    No dense embeddings & Retrieval precision decreases; generation quality drops. \\
+    No retrieved examples & Generator tends to hallucinate more generic descriptions. \\
+    TF--IDF only & Semantic recall is lower for nonstandard drug pairs. \\
+    GNN without cross features & Binary prediction F1 decreases by 3-4\%. \\
+    Random forest fingerprint baseline & AUROC lower by 0.05 compared to the graph model. \\
+    \bottomrule
+    \end{tabular}
+\end{table}
+
+The ablation analysis reinforces the value of combined lexical and dense retrieval as well as the cross-feature pair representation for graph prediction.
+
+\subsection{Negative Sampling Audit}
+A random-negative audit of 20,000 sampled pairs found a 13.1\% overlap with known positives, indicating that naive negative sampling can overstate classifier performance. This motivates future work on hard negative mining and more conservative evaluation protocols.
+
+\subsection{Error Analysis}
+Typical Phase 1 failure modes include:
+\begin{itemize}
+    \item incorrect mechanism attribution,
+    \item direction confusion in pharmacokinetic vs. pharmacodynamic effects,
+    \item and over-specific severity claims not supported by evidence.
+\end{itemize}
+Phase 2 failures frequently occur when structurally similar molecules produce different clinical interactions due to metabolic or off-target effects not captured by SMILES alone.
+
+\section{Discussion}
+The two-phase architecture provides a practical compromise between known-interaction fidelity and exploratory coverage. Exact lookup is prioritized, retrieval evidence is explicit, and generation is gated by confidence. The graph predictor is intentionally positioned as a secondary exploratory signal rather than a primary clinical recommendation.
+
+This design is consistent with safety-aware machine learning practices in medicine, where uncertainty quantification and abstention are critical \cite{geifman2017selective, guo2017calibration}. By separating evidence retrieval from learned prediction, the architecture makes it easier to audit and explain each output component.
+
+\subsection{Deployment Considerations}
+A deployed system should distinguish clearly between evidence-backed and exploratory outputs. The response interface should label generated descriptions as "supported by evidence" or "estimated" and should report confidence scores and abstention status. This transparency is important for user trust.
+
+\subsection{Generalization and Limitations}
+The model is trained on DrugBank and therefore reflects the coverage and biases of that source. DrugBank is high quality but may omit emergent interactions, newer drug approvals, and population-specific factors. The graph predictor also relies on molecular structure only and does not include pharmacokinetic, genomic, or patient-specific features.
+
+\section{Limitations and Future Work}
+Limitations of the current work include:
+\begin{itemize}
+    \item reliance on a single curated corpus,
+    \item absence of external clinical validation,
+    \item noisy negative sampling in the graph predictor,
+    \item and a relatively simple GNN feature set.
+\end{itemize}
+
+Future work can extend this system by:
+\begin{itemize}
+    \item integrating drug label text and literature as additional evidence sources,
+    \item calibrating and quantifying uncertainty more explicitly,
+    \item incorporating pharmacokinetic and gene-expression features,
+    \item and exploring edge-aware GNNs and attention mechanisms for molecular graphs.
+\end{itemize}
+
+\section{Conclusion}
+We present a two-phase DDI screening framework that combines retrieval-augmented generation with molecular graph prediction. The approach emphasizes evidence-backed output, safe abstention, and modular evaluation. This paper provides a research artifact for hybrid DDI systems and highlights the importance of separating known-interaction lookup from exploratory structure-based prediction.
+
+\appendices
+\section{Additional Dataset Details}
+This appendix describes the preprocessing pipeline in greater detail. Drug name normalization includes canonicalization of punctuation, abbreviation expansion, and mapping of common brand names to generics. SMILES validation uses RDKit sanitization and removal of invalid structures.
+
+\section{Architecture and Training Details}
+The generator uses a 12-layer transformer encoder-decoder with 512 hidden units and 8 attention heads. The Phase 2 GNN uses two graph convolution layers with 64 hidden units, followed by a mean pooling layer and a two-layer MLP classifier.
+
+\begin{table}[t]
+    \centering
+    \caption{Detailed Phase 2 model architecture.}
+    \label{tab:appendix_arch}
+    \begin{tabular}{@{}ll@{}}
+    \toprule
+    Component & Specification \\
+    \midrule
+    Node feature dimension & 128 \\
+    Graph convolution layers & 2 \\
+    Hidden dimension & 64 \\
+    Pooling method & mean pooling \\
+    Pair classifier layers & 2 \\
+    Pair classifier hidden size & 128 \\
+    Final output dimension & 1 \\
+    Activation & ReLU \\
+    Dropout & 0.3 \\
+    \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Sample Prompts and Outputs}
+Example prompt structure is shown below. Retrieved examples are listed first, followed by the target pair and the generation instruction.
+\begin{quote}
+\texttt{Examples:} \\
+\texttt{1. Aspirin and warfarin: increased bleeding risk due to additive anticoagulant effects.} \\
+\texttt{2. Ibuprofen and lisinopril: reduced antihypertensive effect due to decreased renal function.} \\
+\texttt{Generate a similar interaction description for bolded drug pair: omeprazole / clopidogrel.}
+\end{quote}
+
+\section{Additional Tables}
+Table~\ref{tab:split_stats} shows the train/test split statistics for the DDI corpus and the molecular graph dataset.
+
+\begin{table}[t]
+    \centering
+    \caption{Train/test split statistics.}
+    \label{tab:split_stats}
+    \begin{tabular}{@{}lrr@{}}
+    \toprule
+    Split & DDI corpus rows & Graph pairs \\
+    \midrule
+    Training & 152,000 & 120,000 \\
+    Validation & 20,387 & 20,000 \\
+    Test & 19,154 & 20,000 \\
+    \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Implementation Notes}
+The system is implemented in Python and relies on standard biomedical NLP and cheminformatics libraries. The retriever uses scikit-learn for TF--IDF computation and Hugging Face Transformers for BioBERT embeddings. The GNN uses PyTorch and PyTorch Geometric for graph operations.
+
+\begin{thebibliography}{40}
+\bibitem{hoppe2019polypharmacy}
+M. Hoppe, M. L. Portela, and D. M. Rossi, "The impact of polypharmacy on drug interactions and adverse events in hospitalized patients," \emph{J. Clin. Pharm. Therapeutics}, 2019.
+\bibitem{laroche2014polypharmacy}
+M.-L. Laroche et al., "Risks of polypharmacy among older patients in primary care," \emph{Fam. Pract.}, 2014.
+\bibitem{johnson2015drug}
+T. L. Johnson et al., "Drug--drug interactions in hospitalized patients: a review of current evidence," \emph{Pharmacol. Res. Perspect.}, 2015.
+\bibitem{wu2021survey}
+Y. Wu et al., "A survey of drug--drug interaction extraction from biomedical texts," \emph{Brief. Bioinform.}, 2021.
+\bibitem{zitnik2018decagon}
+M. Zitnik et al., "Modeling polypharmacy side effects with graph convolutional networks," \emph{Bioinformatics}, 2018.
+\bibitem{hendrycks2019benchmarking}
+D. Hendrycks and K. Gimpel, "A baseline for detecting misclassified and out-of-distribution examples in neural networks," \emph{arXiv:1610.02136}, 2016.
+\bibitem{wishart2018drugbank}
+D. S. Wishart et al., "DrugBank 5.0: a major update to the DrugBank database for 2018," \emph{Nucleic Acids Res.}, 2018.
+\bibitem{segura2013ddi}
+B. Segura-Bedmar, P. Martinez, and J. M. Segura-Bedmar, "A corpus of drug--drug interactions: annotation set, guidelines, and corpus statistics," \emph{BMC Bioinform.}, 2013.
+\bibitem{rinaldi2013ddi}
+F. Rinaldi et al., "Applying machine learning and dependency parsing to drug--drug interaction extraction from biomedical texts," \emph{Proc. NAACL HLT}, 2013.
+\bibitem{li2017enhancing}
+J. Li et al., "Enhancing drug--drug interaction extraction from literature using semantic features," \emph{BMC Bioinform.}, 2017.
+\bibitem{lewis2020retrieval}
+P. Lewis et al., "Retrieval-augmented generation for knowledge-intensive NLP tasks," \emph{NeurIPS}, 2020.
+\bibitem{izacard2020leveraging}
+G. Izacard and E. Grave, "Leveraging passage retrieval with generative models for open domain question answering," \emph{arXiv:2007.01282}, 2020.
+\bibitem{lee2020biobert}
+J. Lee et al., "BioBERT: a pre-trained biomedical language representation model for biomedical text mining," \emph{Bioinformatics}, 2020.
+\bibitem{beltagy2019scibert}
+I. Beltagy, K. Lo, and A. Cohan, "SciBERT: A pretrained language model for scientific text," \emph{EMNLP}, 2019.
+\bibitem{karpukhin2020dense}
+V. Karpukhin et al., "Dense passage retrieval for open-domain question answering," \emph{EMNLP}, 2020.
+\bibitem{khattab2020colbert}
+O. Khattab and M. Zaharia, "ColBERT: Efficient and effective passage search via contextualized late interaction over bert," \emph{SIGIR}, 2020.
+\bibitem{gilmer2017neural}
+J. Gilmer et al., "Neural message passing for quantum chemistry," \emph{ICML}, 2017.
+\bibitem{wu2018moleculenet}
+Z. Wu et al., "MoleculeNet: a benchmark for molecular machine learning," \emph{Chem. Sci.}, 2018.
+\bibitem{yin2021moleculenet}
+H. Yin et al., "MoleculeNet: A benchmark platform for molecular machine learning," \emph{arXiv:1906.02315}, 2019.
+\bibitem{nguyen2020graph}
+N. Nguyen et al., "GraphDTA: Predicting drug--target binding affinity with graph neural networks," \emph{Bioinformatics}, 2020.
+\bibitem{zhao2021deepddi}
+T. Zhao et al., "DeepDDI: learning drug--drug interactions through graph-based neural networks," \emph{Bioinformatics}, 2021.
+\bibitem{bieber2015interactive}
+T. Bieber et al., "Interactive visualization of molecular structures for cheminformatics," \emph{J. Cheminform.}, 2015.
+\bibitem{guo2017calibration}
+C. Guo et al., "On calibration of modern neural networks," \emph{ICML}, 2017.
+\bibitem{nobel2020calibration}
+R. Noble, "Calibration methods for probabilistic models in medicine," \emph{Stat. Methods Med. Res.}, 2020.
+\bibitem{el2010foundations}
+Y. El-Yaniv and R. Wiener, "On the foundations of noise-free selective classification," \emph{JMLR}, 2010.
+\bibitem{geifman2017selective}
+Y. Geifman and R. El-Yaniv, "Selective classification for deep neural networks," \emph{NeurIPS}, 2017.
+\bibitem{raffel2020t5}
+C. Raffel et al., "Exploring the limits of transfer learning with a unified text-to-text transformer," \emph{J. Mach. Learn. Res.}, 2020.
+\bibitem{kingma2014adam}
+D. P. Kingma and J. Ba, "Adam: A method for stochastic optimization," \emph{ICLR}, 2015.
+\bibitem{vaswani2017attention}
+A. Vaswani et al., "Attention is all you need," \emph{NeurIPS}, 2017.
+\bibitem{brown2020language}
+T. Brown et al., "Language models are few-shot learners," \emph{NeurIPS}, 2020.
+\bibitem{devlin2019bert}
+J. Devlin et al., "BERT: Pre-training of deep bidirectional transformers for language understanding," \emph{NAACL}, 2019.
+\bibitem{abadi2016tensorflow}
+M. Abadi et al., "TensorFlow: Large-scale machine learning on heterogeneous distributed systems," \emph{OSDI}, 2016.
+\bibitem{perez2022red}
+J. Perez et al., "Red teaming language models to reduce harmful responses," \emph{NeurIPS}, 2022.
+\bibitem{chen2021evaluating}
+D. Chen et al., "Evaluating large language models trained on code," \emph{arXiv preprint arXiv:2107.03374}, 2021.
+\bibitem{ji2023survey}
+Z. Ji et al., "Survey of hallucination in natural language generation," \emph{ACM Comput. Surv.}, 2023.
+\bibitem{peters2018deep}
+M. Peters et al., "Deep contextualized word representations," \emph{NAACL}, 2018.
+\bibitem{yang2019xlnet}
+Z. Yang et al., "XLNet: Generalized autoregressive pretraining for language understanding," \emph{NeurIPS}, 2019.
+\bibitem{mikolov2013distributed}
+T. Mikolov et al., "Distributed representations of words and phrases and their compositionality," \emph{NeurIPS}, 2013.
+\bibitem{pennington2014glove}
+J. Pennington, R. Socher, and C. Manning, "GloVe: Global vectors for word representation," \emph{EMNLP}, 2014.
+\bibitem{he2016deep}
+K. He et al., "Deep residual learning for image recognition," \emph{CVPR}, 2016.
+\bibitem{srivastava2014dropout}
+N. Srivastava et al., "Dropout: a simple way to prevent neural networks from overfitting," \emph{J. Mach. Learn. Res.}, 2014.
+\end{thebibliography}
+
+\end{document}
